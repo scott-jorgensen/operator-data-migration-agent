@@ -2,9 +2,6 @@
 // This schema is fully decoupled from the operator platform. The only outbound
 // link to the platform is the opaque `externalId` string returned by the
 // PublisherPort; there are NO foreign keys into platform tables.
-//
-// Scaffold baseline: generator + datasource only. The canonical migration
-// domain models are added in UNI-129.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,4 +10,304 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum SessionStatus {
+  OPEN
+  CLOSED
+  ARCHIVED
+}
+
+// Full conceptual lifecycle. MVP drives the coarse subset
+// (UPLOADED -> EXTRACTED -> NORMALIZED -> MATCHED -> IN_REVIEW -> READY
+//  -> COMMITTED -> ROLLED_BACK, plus FAILED); the transient *ING states are
+// reserved so we can split them out later without a schema change.
+enum BatchStatus {
+  UPLOADED
+  EXTRACTING
+  EXTRACTED
+  NORMALIZING
+  NORMALIZED
+  MATCHING
+  MATCHED
+  IN_REVIEW
+  READY
+  PREVIEWED
+  COMMITTING
+  COMMITTED
+  ROLLING_BACK
+  ROLLED_BACK
+  FAILED
+}
+
+enum SourceKind {
+  CSV
+  XLSX
+}
+
+enum EntityType {
+  PRODUCT
+  BOOKING
+  TRAVELER
+  GUIDE
+  QUALIFICATION
+  STAFFING_RULE
+}
+
+enum CanonicalStatus {
+  DRAFT
+  REVIEWED
+  PUBLISHED
+}
+
+enum MatchStatus {
+  UNMATCHED
+  CANDIDATE
+  CONFIRMED
+  REJECTED
+}
+
+enum MatchTargetKind {
+  EXISTING_PLATFORM
+  INTRA_BATCH
+}
+
+enum ReviewReason {
+  LOW_CONFIDENCE
+  CONFLICT
+  DUPLICATE
+  VALIDATION_ERROR
+}
+
+enum ReviewStatus {
+  OPEN
+  RESOLVED
+  SKIPPED
+}
+
+enum ReviewResolution {
+  ACCEPT
+  REJECT
+  REMAP
+  MERGE
+  EDIT
+}
+
+// The explicit, typed publish actions — the entire surface of platform mutation.
+enum PublishOp {
+  CREATE
+  UPDATE
+  LINK
+  DEACTIVATE
+}
+
+enum PublishStatus {
+  PLANNED
+  COMMITTED
+  FAILED
+  ROLLED_BACK
+}
+
+// ---------------------------------------------------------------------------
+// Core tables
+// ---------------------------------------------------------------------------
+
+model MigrationSession {
+  id          String        @id @default(cuid())
+  name        String
+  operatorRef String // opaque target-operator id the publisher understands
+  status      SessionStatus @default(OPEN)
+  createdBy   String?
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  sourceConnections SourceConnection[]
+  batches           ImportBatch[]
+  canonicalRecords  CanonicalRecord[]
+
+  @@index([status])
+}
+
+model SourceConnection {
+  id               String     @id @default(cuid())
+  sessionId        String
+  kind             SourceKind
+  originalFilename String
+  mappingConfig    Json       @default("{}") // source-column -> canonical-field map (editable)
+  status           String     @default("active")
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  session MigrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  batches ImportBatch[]
+
+  @@index([sessionId])
+}
+
+model ImportBatch {
+  id                 String      @id @default(cuid())
+  sessionId          String
+  sourceConnectionId String
+  status             BatchStatus @default(UPLOADED)
+  entityTypes        EntityType[]
+  counts             Json        @default("{}") // per-stage tallies
+  error              Json?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  session          MigrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceConnection SourceConnection @relation(fields: [sourceConnectionId], references: [id], onDelete: Cascade)
+
+  rawArtifacts     RawArtifact[]
+  extractedRecords ExtractedRecord[]
+  canonicalRecords CanonicalRecord[]
+  matchCandidates  MatchCandidate[]
+  reviewItems      ReviewItem[]
+  publishActions   PublishAction[]
+
+  @@index([sessionId])
+  @@index([status])
+}
+
+model RawArtifact {
+  id          String   @id @default(cuid())
+  batchId     String
+  storageKey  String // path/key in the ArtifactStore
+  contentHash String
+  byteSize    Int
+  mimeType    String
+  meta        Json     @default("{}") // sheet names, row count, etc.
+  createdAt   DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([contentHash])
+}
+
+model ExtractedRecord {
+  id             String     @id @default(cuid())
+  batchId        String
+  entityType     EntityType
+  sourceRowIndex Int
+  sheetName      String?
+  rawData        Json // original cell values
+  parseErrors    Json?
+  createdAt      DateTime   @default(now())
+
+  batch            ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  canonicalRecords CanonicalRecord[]
+
+  @@index([batchId, entityType])
+}
+
+// Single generic canonical store. Strong typing lives in code (per-entity Zod
+// schemas in src/domain/canonical); `data` is validated on write and parsed to
+// the discriminated TS union on read. Promoted, nullable match-key columns are
+// shared across all entity types so matching/indexing stays relational.
+model CanonicalRecord {
+  id             String          @id @default(cuid())
+  batchId        String
+  sessionId      String
+  entityType     EntityType
+  sourceRecordId String?
+  status         CanonicalStatus @default(DRAFT)
+  data           Json // typed-validated canonical body
+  dedupeKey      String?
+  externalId     String? // set after commit
+  keyEmail       String?
+  keyCode        String? // sku / code
+  keyName        String?
+  keyDate        DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  batch        ImportBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  session      MigrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceRecord ExtractedRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
+
+  matchCandidates MatchCandidate[]
+  reviewItems     ReviewItem[]
+  publishActions  PublishAction[]
+
+  @@index([batchId, entityType, status])
+  @@index([entityType, dedupeKey])
+  @@index([entityType, keyEmail])
+  @@index([entityType, keyCode])
+}
+
+model MatchCandidate {
+  id                String          @id @default(cuid())
+  batchId           String
+  canonicalRecordId String
+  entityType        EntityType
+  targetKind        MatchTargetKind
+  targetExternalId  String? // existing platform entity (EXISTING_PLATFORM)
+  targetRecordId    String? // peer CanonicalRecord id (INTRA_BATCH)
+  score             Float
+  strategy          String // e.g. "email_exact", "name_fuzzy"
+  status            MatchStatus     @default(CANDIDATE)
+  evidence          Json            @default("{}")
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  batch           ImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  canonicalRecord CanonicalRecord @relation(fields: [canonicalRecordId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, entityType, status])
+  @@index([canonicalRecordId])
+}
+
+model ReviewItem {
+  id                String            @id @default(cuid())
+  batchId           String
+  canonicalRecordId String
+  entityType        EntityType
+  reason            ReviewReason
+  status            ReviewStatus      @default(OPEN)
+  resolution        ReviewResolution?
+  resolvedBy        String?
+  resolutionData    Json? // chosen match id, field edits, etc.
+  priority          Int               @default(0)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  batch           ImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  canonicalRecord CanonicalRecord @relation(fields: [canonicalRecordId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, status])
+  @@index([canonicalRecordId])
+}
+
+// Audit log of everything done (or planned) against the operator platform.
+model PublishAction {
+  id                String        @id @default(cuid())
+  batchId           String
+  canonicalRecordId String
+  entityType        EntityType
+  op                PublishOp
+  status            PublishStatus @default(PLANNED)
+  sequence          Int
+  payload           Json // exact typed body sent to the publisher
+  targetExternalId  String?
+  resultExternalId  String?
+  response          Json?
+  error             Json?
+  compensationOf    String? // self-ref: a rollback action points at the action it reverses
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  batch           ImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  canonicalRecord CanonicalRecord @relation(fields: [canonicalRecordId], references: [id], onDelete: Cascade)
+
+  compensates    PublishAction?  @relation("Compensation", fields: [compensationOf], references: [id], onDelete: SetNull)
+  compensatedBy  PublishAction[] @relation("Compensation")
+
+  @@index([batchId, status])
+  @@index([batchId, sequence])
 }

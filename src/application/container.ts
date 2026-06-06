@@ -1,0 +1,22 @@
+import type { SourceKind } from '@prisma/client';
+import { env } from '../config/env.js';
+import { LocalFsArtifactStore } from '../infra/artifacts/local-fs.store.js';
+import { CsvConnector } from '../infra/connectors/csv.connector.js';
+import { XlsxConnector } from '../infra/connectors/xlsx.connector.js';
+import type { SourceConnector } from '../ports/source-connector.port.js';
+import { IngestService } from './ingest.service.js';
+import { SessionService } from './session.service.js';
+
+/**
+ * Tiny composition root. Wires concrete adapters to services so routes/workers
+ * depend on interfaces, not construction details.
+ */
+export const artifactStore = new LocalFsArtifactStore(env.ARTIFACT_DIR);
+
+export const connectors: Record<SourceKind, SourceConnector> = {
+  CSV: new CsvConnector(),
+  XLSX: new XlsxConnector(),
+};
+
+export const sessionService = new SessionService();
+export const ingestService = new IngestService(artifactStore, connectors);
