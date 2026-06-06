@@ -6,6 +6,7 @@ import {
   NoCommittedBatchError,
   NotPublishableError,
 } from '../../application/publish.service.js';
+import { errorBody } from '../errors.js';
 
 export async function publishRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string } }>('/batches/:id/preview', (req, reply) =>
@@ -35,15 +36,15 @@ async function run<T>(reply: import('fastify').FastifyReply, fn: () => Promise<T
   try {
     return await fn();
   } catch (err) {
-    if (err instanceof BatchNotFoundError) return reply.code(404).send({ error: 'not_found' });
+    if (err instanceof BatchNotFoundError) return reply.code(404).send(errorBody('not_found', 'batch not found'));
     if (err instanceof NoCommittedBatchError) {
-      return reply.code(404).send({ error: 'no_committed_batch' });
+      return reply.code(404).send(errorBody('no_committed_batch', err.message));
     }
     if (err instanceof NotPublishableError) {
-      return reply.code(409).send({ error: 'not_publishable', openReviewItems: err.openReviewItems });
+      return reply.code(409).send(errorBody('not_publishable', err.message, { openReviewItems: err.openReviewItems }));
     }
     if (err instanceof InvalidBatchStateError) {
-      return reply.code(409).send({ error: 'invalid_state', status: err.status });
+      return reply.code(409).send(errorBody('invalid_state', err.message, { status: err.status }));
     }
     throw err;
   }

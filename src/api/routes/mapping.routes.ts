@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { EntityType } from '@prisma/client';
 import { columnMapper, connectors } from '../../application/container.js';
 import { kindFromFilename } from '../schemas/requests.js';
+import { errorBody } from '../errors.js';
 import type { SheetSample } from '../../ports/column-mapper.port.js';
 
 const SAMPLE_ROWS = 5;
@@ -15,7 +16,7 @@ const SAMPLE_ROWS = 5;
 export async function mappingRoutes(app: FastifyInstance): Promise<void> {
   app.post('/mapping/suggest', async (req, reply) => {
     if (!req.isMultipart()) {
-      return reply.code(415).send({ error: 'expected_multipart_form_data' });
+      return reply.code(415).send(errorBody('expected_multipart', 'expected multipart/form-data'));
     }
 
     let fileBuffer: Buffer | undefined;
@@ -33,9 +34,9 @@ export async function mappingRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    if (!fileBuffer || !filename) return reply.code(400).send({ error: 'missing_file' });
+    if (!fileBuffer || !filename) return reply.code(400).send(errorBody('missing_file', 'a file part is required'));
     const kind = kindFromFilename(filename);
-    if (!kind) return reply.code(400).send({ error: 'unsupported_file_type', filename });
+    if (!kind) return reply.code(400).send(errorBody('unsupported_file_type', `unsupported file: ${filename}`));
 
     const workbook = await connectors[kind].parse(fileBuffer);
     const isSingleSheet = workbook.sheets.length === 1;
