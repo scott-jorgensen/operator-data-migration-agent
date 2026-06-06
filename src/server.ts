@@ -1,7 +1,13 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import multipart from '@fastify/multipart';
 import { loggerOptions } from './lib/logger.js';
 import { prisma } from './infra/db/prisma.js';
 import { registerServiceAuth } from './api/auth.js';
+import { sessionRoutes } from './api/routes/sessions.routes.js';
+import { batchRoutes } from './api/routes/batches.routes.js';
+
+// Upload ceiling for raw source files (generous for spreadsheets, MVP-safe).
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 /**
  * Fastify app factory. Routes are registered here as the API slices land.
@@ -13,17 +19,17 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Service-to-service auth guards everything except public paths (/health).
   registerServiceAuth(app);
 
+  await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
+
   app.get('/health', async () => {
     // Cheap liveness + DB reachability check.
     await prisma.$queryRaw`SELECT 1`;
     return { status: 'ok', service: 'operator-data-migration-agent' };
   });
 
-  // Route registration goes here as slices land:
-  //   await app.register(sessionRoutes);
-  //   await app.register(batchRoutes);
-  //   await app.register(reviewRoutes);
-  //   await app.register(publishRoutes);
+  await app.register(sessionRoutes);
+  await app.register(batchRoutes);
+  // Further slices: reviewRoutes, publishRoutes.
 
   return app;
 }

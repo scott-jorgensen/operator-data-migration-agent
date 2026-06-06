@@ -1,3 +1,4 @@
+import 'dotenv/config'; // load .env before any config is evaluated
 import { env } from './config/env.js';
 import { buildServer } from './server.js';
 import { disconnectPrisma } from './infra/db/prisma.js';
