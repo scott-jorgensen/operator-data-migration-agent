@@ -1,0 +1,38 @@
+{
+  "name": "operator-data-migration-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Separate migration service for operator data import and setup (Spreadsheet MVP)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts --api --worker",
+    "dev:api": "tsx watch src/index.ts --api",
+    "dev:worker": "tsx watch src/index.ts --worker",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js --api --worker",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^8.3.0",
+    "@prisma/client": "^5.22.0",
+    "fastify": "^4.28.1",
+    "pg-boss": "^10.1.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "pino-pretty": "^11.3.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}
