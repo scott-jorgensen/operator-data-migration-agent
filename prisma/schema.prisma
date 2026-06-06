@@ -270,6 +270,7 @@ model ReviewItem {
   entityType        EntityType
   reason            ReviewReason
   status            ReviewStatus      @default(OPEN)
+  details           Json? // plain-language explanation + structured context (set when created)
   resolution        ReviewResolution?
   resolvedBy        String?
   resolutionData    Json? // chosen match id, field edits, etc.

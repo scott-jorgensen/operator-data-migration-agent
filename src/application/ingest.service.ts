@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { BatchStatus, EntityType, type SourceKind } from '@prisma/client';
 import { prisma } from '../infra/db/prisma.js';
 import type { ArtifactStore } from '../ports/artifact-store.port.js';
+import type { JobQueue } from '../ports/job-queue.port.js';
 import type { ParsedWorkbook, SourceConnector } from '../ports/source-connector.port.js';
 import { type MappingConfig, resolveEntityType } from '../domain/ingest/mapping.js';
 
@@ -42,6 +43,7 @@ export class IngestService {
   constructor(
     private readonly artifacts: ArtifactStore,
     private readonly connectors: Connectors,
+    private readonly queue: JobQueue,
   ) {}
 
   async ingest(input: IngestInput): Promise<IngestResult> {
@@ -95,7 +97,7 @@ export class IngestService {
     const entityTypes = Object.keys(extractedCounts) as EntityType[];
 
     // 4. Persist source connection, batch, raw artifact, and extracted records.
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const sourceConnection = await tx.sourceConnection.create({
         data: {
           sessionId: input.sessionId,
@@ -152,6 +154,11 @@ export class IngestService {
         unmappedSheets,
       };
     });
+
+    // 5. Kick off async normalization (-> match -> review) via the job queue.
+    await this.queue.enqueueNormalize(result.batchId);
+
+    return result;
   }
 }
 
