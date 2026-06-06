@@ -5,6 +5,7 @@ import { prisma } from './infra/db/prisma.js';
 import { registerServiceAuth } from './api/auth.js';
 import { sessionRoutes } from './api/routes/sessions.routes.js';
 import { batchRoutes } from './api/routes/batches.routes.js';
+import { reviewRoutes } from './api/routes/review.routes.js';
 
 // Upload ceiling for raw source files (generous for spreadsheets, MVP-safe).
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -29,7 +30,8 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   await app.register(sessionRoutes);
   await app.register(batchRoutes);
-  // Further slices: reviewRoutes, publishRoutes.
+  await app.register(reviewRoutes);
+  // Further slices: publishRoutes.
 
   return app;
 }

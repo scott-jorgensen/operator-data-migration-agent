@@ -7,6 +7,7 @@ import { PgBossJobQueue } from '../infra/queue/pgboss-queue.js';
 import type { JobQueue } from '../ports/job-queue.port.js';
 import type { SourceConnector } from '../ports/source-connector.port.js';
 import { IngestService } from './ingest.service.js';
+import { ReviewService } from './review.service.js';
 import { SessionService } from './session.service.js';
 
 /**
@@ -23,3 +24,4 @@ export const connectors: Record<SourceKind, SourceConnector> = {
 export const jobQueue: JobQueue = new PgBossJobQueue();
 export const sessionService = new SessionService();
 export const ingestService = new IngestService(artifactStore, connectors, jobQueue);
+export const reviewService = new ReviewService();
