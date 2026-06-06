@@ -17,8 +17,10 @@ export async function startBoss(): Promise<PgBoss> {
   });
   await instance.start();
   // Queues must exist before send/work in pg-boss v10. Idempotent.
+  // retryLimit 0: a failed stage stays FAILED for manual retry (POST
+  // /batches/:id/retry) rather than auto-looping.
   for (const name of Object.values(JOBS)) {
-    await instance.createQueue(name);
+    await instance.createQueue(name, { name, retryLimit: 0 });
   }
   boss = instance;
   return boss;

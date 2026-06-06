@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../infra/db/prisma.js';
-import { ingestService } from '../../application/container.js';
+import { ingestService, pipelineService, publishService, reviewService } from '../../application/container.js';
 import { SessionNotFoundError } from '../../application/ingest.service.js';
+import { BatchNotFoundError } from '../../application/publish.service.js';
 import { MappingConfigSchema } from '../../domain/ingest/mapping.js';
 import { kindFromFilename } from '../schemas/requests.js';
 
@@ -91,5 +92,41 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
     });
     if (!batch) return reply.code(404).send({ error: 'not_found' });
     return batch;
+  });
+
+  // Observability: a single batch-lifecycle view — status, counts/timings,
+  // error, readiness, the review audit trail, and the publish log.
+  app.get<{ Params: { id: string } }>('/batches/:id/timeline', async (req, reply) => {
+    const batch = await prisma.importBatch.findUnique({ where: { id: req.params.id } });
+    if (!batch) return reply.code(404).send({ error: 'not_found' });
+    const [readiness, reviewEvents, publishActions] = await Promise.all([
+      reviewService.readiness(batch.id),
+      prisma.reviewEvent.findMany({ where: { batchId: batch.id }, orderBy: { createdAt: 'asc' } }),
+      publishService.listActions(batch.id),
+    ]);
+    return {
+      batch: {
+        id: batch.id,
+        sessionId: batch.sessionId,
+        status: batch.status,
+        counts: batch.counts,
+        error: batch.error,
+        createdAt: batch.createdAt,
+        updatedAt: batch.updatedAt,
+      },
+      readiness,
+      reviewEvents,
+      publishActions,
+    };
+  });
+
+  // Recover a failed (or stuck) pipeline by re-running normalize -> match.
+  app.post<{ Params: { id: string } }>('/batches/:id/retry', async (req, reply) => {
+    try {
+      return await pipelineService.retry(req.params.id);
+    } catch (err) {
+      if (err instanceof BatchNotFoundError) return reply.code(404).send({ error: 'not_found' });
+      throw err;
+    }
   });
 }

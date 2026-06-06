@@ -3,6 +3,7 @@ import { publishService } from '../../application/container.js';
 import {
   BatchNotFoundError,
   InvalidBatchStateError,
+  NoCommittedBatchError,
   NotPublishableError,
 } from '../../application/publish.service.js';
 
@@ -22,6 +23,11 @@ export async function publishRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>('/batches/:id/actions', async (req) =>
     publishService.listActions(req.params.id),
   );
+
+  // Roll back the most recently committed batch in a session.
+  app.post<{ Params: { id: string } }>('/sessions/:id/rollback-latest', (req, reply) =>
+    run(reply, () => publishService.rollbackLatestCommitted(req.params.id)),
+  );
 }
 
 // Shared error mapping for the publish lifecycle endpoints.
@@ -30,6 +36,9 @@ async function run<T>(reply: import('fastify').FastifyReply, fn: () => Promise<T
     return await fn();
   } catch (err) {
     if (err instanceof BatchNotFoundError) return reply.code(404).send({ error: 'not_found' });
+    if (err instanceof NoCommittedBatchError) {
+      return reply.code(404).send({ error: 'no_committed_batch' });
+    }
     if (err instanceof NotPublishableError) {
       return reply.code(409).send({ error: 'not_publishable', openReviewItems: err.openReviewItems });
     }
