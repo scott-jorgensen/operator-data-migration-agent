@@ -94,7 +94,13 @@ export class PublishService {
     await this.assertNoOpenReviews(batchId);
     assertStatusIn(
       batch.status,
-      [BatchStatus.READY, BatchStatus.PREVIEWED, BatchStatus.COMMITTING, BatchStatus.FAILED],
+      [
+        BatchStatus.READY,
+        BatchStatus.PREVIEWED,
+        BatchStatus.COMMITTING,
+        BatchStatus.COMMITTED, // re-commit is a safe no-op (idempotent)
+        BatchStatus.FAILED,
+      ],
       'commit',
       batchId,
     );
