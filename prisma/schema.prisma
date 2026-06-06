@@ -1,0 +1,16 @@
+// Operator Data Migration Agent — migration service DB only.
+// This schema is fully decoupled from the operator platform. The only outbound
+// link to the platform is the opaque `externalId` string returned by the
+// PublisherPort; there are NO foreign keys into platform tables.
+//
+// Scaffold baseline: generator + datasource only. The canonical migration
+// domain models are added in UNI-129.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
