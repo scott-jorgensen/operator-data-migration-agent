@@ -3,9 +3,13 @@ import { env } from '../config/env.js';
 import { LocalFsArtifactStore } from '../infra/artifacts/local-fs.store.js';
 import { CsvConnector } from '../infra/connectors/csv.connector.js';
 import { XlsxConnector } from '../infra/connectors/xlsx.connector.js';
+import Anthropic from '@anthropic-ai/sdk';
 import { PgBossJobQueue } from '../infra/queue/pgboss-queue.js';
 import { OperatorImportStubPublisher } from '../infra/publishers/operator-import.stub.js';
 import { OperatorImportHttpPublisher } from '../infra/publishers/operator-import.http.js';
+import { AliasColumnMapper } from '../infra/ai/alias-mapper.js';
+import { ClaudeColumnMapper } from '../infra/ai/claude-mapper.js';
+import type { ColumnMapper } from '../ports/column-mapper.port.js';
 import type { JobQueue } from '../ports/job-queue.port.js';
 import type { PublisherPort } from '../ports/publisher.port.js';
 import type { SourceConnector } from '../ports/source-connector.port.js';
@@ -48,3 +52,13 @@ export const ingestService = new IngestService(artifactStore, connectors, jobQue
 export const pipelineService = new PipelineService(jobQueue);
 export const reviewService = new ReviewService();
 export const publishService = new PublishService(publisher);
+export const columnMapper: ColumnMapper = buildColumnMapper();
+
+/** LLM mapper when an API key is configured; deterministic alias fallback otherwise. */
+function buildColumnMapper(): ColumnMapper {
+  if (env.ANTHROPIC_API_KEY) {
+    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    return new ClaudeColumnMapper((body) => client.messages.create(body), env.AI_MAPPING_MODEL);
+  }
+  return new AliasColumnMapper();
+}

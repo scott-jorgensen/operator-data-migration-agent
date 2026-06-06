@@ -70,8 +70,14 @@ export function resolveEntityType(
     if (unscoped) return { entityType: unscoped.entityType, columns: unscoped.columns };
   }
 
-  const detected = sheet.name ? SHEET_NAME_TO_ENTITY[sheet.name.trim().toLowerCase()] : undefined;
+  const detected = detectEntityTypeFromName(sheet.name);
   if (detected) return { entityType: detected, columns: {} };
 
   return undefined;
+}
+
+/** Map a sheet/file name to an entity type by naming convention, if recognized. */
+export function detectEntityTypeFromName(name?: string): EntityType | undefined {
+  if (!name) return undefined;
+  return SHEET_NAME_TO_ENTITY[name.trim().toLowerCase()];
 }
