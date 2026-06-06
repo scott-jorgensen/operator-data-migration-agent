@@ -1,5 +1,6 @@
 import { BatchStatus, type EntityType, Prisma } from '@prisma/client';
 import { prisma } from '../infra/db/prisma.js';
+import { logger } from '../lib/logger.js';
 import { buildCanonical } from '../domain/canonical/normalize.js';
 import { MappingConfigSchema } from '../domain/ingest/mapping.js';
 import type { JobQueue } from '../ports/job-queue.port.js';
@@ -9,82 +10,97 @@ import type { JobQueue } from '../ports/job-queue.port.js';
  * against its per-entity Zod schema, derives promoted match keys, and raises a
  * VALIDATION_ERROR review item for rows that fail validation. Idempotent:
  * clears prior canonical records for the batch (cascading old matches/reviews)
- * before rebuilding. Enqueues the match stage on completion.
+ * before rebuilding. Enqueues the match stage on completion. On failure the
+ * batch is moved to FAILED with a structured error and the job rethrows.
  */
 export async function runNormalize(batchId: string, queue: JobQueue): Promise<void> {
-  const batch = await prisma.importBatch.findUnique({
-    where: { id: batchId },
-    include: { sourceConnection: true },
-  });
-  if (!batch) return;
-
-  await prisma.importBatch.update({ where: { id: batchId }, data: { status: BatchStatus.NORMALIZING } });
-
-  const mapping = MappingConfigSchema.parse(batch.sourceConnection.mappingConfig ?? {});
-  const extracted = await prisma.extractedRecord.findMany({ where: { batchId } });
-
-  // Idempotent rebuild.
-  await prisma.canonicalRecord.deleteMany({ where: { batchId } });
-
-  const normalizedCounts: Partial<Record<EntityType, number>> = {};
-  let validationFlags = 0;
-
-  for (const er of extracted) {
-    const columns = columnsFor(mapping, er.entityType, er.sheetName);
-    const { data, keys, validationErrors } = buildCanonical(
-      er.entityType,
-      er.rawData as Record<string, unknown>,
-      columns,
-    );
-
-    const canonical = await prisma.canonicalRecord.create({
-      data: {
-        batchId,
-        sessionId: batch.sessionId,
-        entityType: er.entityType,
-        sourceRecordId: er.id,
-        data: data as Prisma.InputJsonValue,
-        dedupeKey: keys.dedupeKey,
-        keyEmail: keys.keyEmail,
-        keyCode: keys.keyCode,
-        keyName: keys.keyName,
-        keyDate: keys.keyDate,
-      },
+  const log = logger.child({ batchId, stage: 'normalize' });
+  const startedAt = Date.now();
+  try {
+    const batch = await prisma.importBatch.findUnique({
+      where: { id: batchId },
+      include: { sourceConnection: true },
     });
+    if (!batch) {
+      log.warn('batch not found; skipping');
+      return;
+    }
 
-    normalizedCounts[er.entityType] = (normalizedCounts[er.entityType] ?? 0) + 1;
+    await prisma.importBatch.update({ where: { id: batchId }, data: { status: BatchStatus.NORMALIZING } });
+    log.info('normalize started');
 
-    if (validationErrors.length > 0) {
-      validationFlags++;
-      await prisma.reviewItem.create({
+    const mapping = MappingConfigSchema.parse(batch.sourceConnection.mappingConfig ?? {});
+    const extracted = await prisma.extractedRecord.findMany({ where: { batchId } });
+
+    // Idempotent rebuild.
+    await prisma.canonicalRecord.deleteMany({ where: { batchId } });
+
+    const normalizedCounts: Partial<Record<EntityType, number>> = {};
+    let validationFlags = 0;
+
+    for (const er of extracted) {
+      const columns = columnsFor(mapping, er.entityType, er.sheetName);
+      const { data, keys, validationErrors } = buildCanonical(
+        er.entityType,
+        er.rawData as Record<string, unknown>,
+        columns,
+      );
+
+      const canonical = await prisma.canonicalRecord.create({
         data: {
           batchId,
-          canonicalRecordId: canonical.id,
+          sessionId: batch.sessionId,
           entityType: er.entityType,
-          reason: 'VALIDATION_ERROR',
-          priority: 2,
-          details: {
-            explanation: `This row has validation problems: ${validationErrors.join('; ')}.`,
-            validationErrors,
-          },
+          sourceRecordId: er.id,
+          data: data as Prisma.InputJsonValue,
+          dedupeKey: keys.dedupeKey,
+          keyEmail: keys.keyEmail,
+          keyCode: keys.keyCode,
+          keyName: keys.keyName,
+          keyDate: keys.keyDate,
         },
       });
+
+      normalizedCounts[er.entityType] = (normalizedCounts[er.entityType] ?? 0) + 1;
+
+      if (validationErrors.length > 0) {
+        validationFlags++;
+        await prisma.reviewItem.create({
+          data: {
+            batchId,
+            canonicalRecordId: canonical.id,
+            entityType: er.entityType,
+            reason: 'VALIDATION_ERROR',
+            priority: 2,
+            details: {
+              explanation: `This row has validation problems: ${validationErrors.join('; ')}.`,
+              validationErrors,
+            },
+          },
+        });
+      }
     }
-  }
 
-  await prisma.importBatch.update({
-    where: { id: batchId },
-    data: {
-      status: BatchStatus.NORMALIZED,
-      counts: {
-        ...(batch.counts as object),
-        normalized: normalizedCounts,
-        validationFlags,
+    const durationMs = Date.now() - startedAt;
+    await prisma.importBatch.update({
+      where: { id: batchId },
+      data: {
+        status: BatchStatus.NORMALIZED,
+        counts: mergeCounts(batch.counts, {
+          normalized: normalizedCounts,
+          validationFlags,
+          timings: { normalizeMs: durationMs },
+        }),
       },
-    },
-  });
+    });
+    log.info({ normalizedCounts, validationFlags, durationMs }, 'normalize complete');
 
-  await queue.enqueueMatch(batchId);
+    await queue.enqueueMatch(batchId);
+  } catch (err) {
+    log.error({ err: String(err) }, 'normalize failed');
+    await markFailed(batchId, 'normalize', err);
+    throw err;
+  }
 }
 
 /** Resolve the column map for an extracted record's entity/sheet. */
@@ -98,4 +114,24 @@ function columnsFor(
     : undefined;
   if (bySheet) return bySheet.columns;
   return mapping.sheets.find((s) => s.entityType === entityType)?.columns ?? {};
+}
+
+/** Shallow-merge a patch into the existing JSON counts object. */
+export function mergeCounts(existing: unknown, patch: Record<string, unknown>): Prisma.InputJsonValue {
+  const base = (existing && typeof existing === 'object' ? existing : {}) as Record<string, unknown>;
+  const timings = {
+    ...((base.timings as object) ?? {}),
+    ...((patch.timings as object) ?? {}),
+  };
+  return { ...base, ...patch, timings } as Prisma.InputJsonValue;
+}
+
+/** Move a batch to FAILED with a structured error (best-effort). */
+export async function markFailed(batchId: string, stage: string, err: unknown): Promise<void> {
+  await prisma.importBatch
+    .update({
+      where: { id: batchId },
+      data: { status: BatchStatus.FAILED, error: { stage, message: String(err) } },
+    })
+    .catch(() => undefined);
 }

@@ -9,6 +9,7 @@ import {
   ReviewStatus,
 } from '@prisma/client';
 import { prisma } from '../infra/db/prisma.js';
+import { logger } from '../lib/logger.js';
 import { idempotencyKey } from '../domain/publish/actions.js';
 import type { PublisherPort } from '../ports/publisher.port.js';
 
@@ -23,6 +24,13 @@ export class NotPublishableError extends Error {
   constructor(public readonly batchId: string, public readonly openReviewItems: number) {
     super(`batch ${batchId} has ${openReviewItems} unresolved review item(s)`);
     this.name = 'NotPublishableError';
+  }
+}
+
+export class NoCommittedBatchError extends Error {
+  constructor(public readonly sessionId: string) {
+    super(`session ${sessionId} has no committed batch to roll back`);
+    this.name = 'NoCommittedBatchError';
   }
 }
 
@@ -94,7 +102,13 @@ export class PublishService {
     await this.assertNoOpenReviews(batchId);
     assertStatusIn(
       batch.status,
-      [BatchStatus.READY, BatchStatus.PREVIEWED, BatchStatus.COMMITTING, BatchStatus.FAILED],
+      [
+        BatchStatus.READY,
+        BatchStatus.PREVIEWED,
+        BatchStatus.COMMITTING,
+        BatchStatus.COMMITTED, // re-commit is a safe no-op (idempotent)
+        BatchStatus.FAILED,
+      ],
       'commit',
       batchId,
     );
@@ -156,7 +170,9 @@ export class PublishService {
 
     await prisma.importBatch.update({ where: { id: batchId }, data: { status: BatchStatus.COMMITTED, error: Prisma.DbNull } });
     const all = await prisma.publishAction.findMany({ where: { batchId } });
-    return { batchId, status: BatchStatus.COMMITTED, summary: summarize(all) };
+    const summary = summarize(all);
+    logger.info({ batchId, stage: 'commit', summary }, 'commit complete');
+    return { batchId, status: BatchStatus.COMMITTED, summary };
   }
 
   /** Best-effort compensation for a committed batch (pragmatic, not perfect). */
@@ -210,7 +226,18 @@ export class PublishService {
     }
 
     await prisma.importBatch.update({ where: { id: batchId }, data: { status: BatchStatus.ROLLED_BACK } });
+    logger.info({ batchId, compensations, stage: 'rollback' }, 'rollback complete');
     return { batchId, status: BatchStatus.ROLLED_BACK, compensations };
+  }
+
+  /** Roll back the most recently committed batch in a session. */
+  async rollbackLatestCommitted(sessionId: string) {
+    const batch = await prisma.importBatch.findFirst({
+      where: { sessionId, status: BatchStatus.COMMITTED },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!batch) throw new NoCommittedBatchError(sessionId);
+    return this.rollback(batch.id);
   }
 
   listActions(batchId: string) {
