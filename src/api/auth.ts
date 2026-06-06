@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { env } from '../config/env.js';
+import { errorBody } from './errors.js';
 
 /**
  * Service-to-service authentication.
@@ -36,7 +37,7 @@ export function registerServiceAuth(app: FastifyInstance): void {
 
     const token = extractBearer(req);
     if (!token || !tokenMatches(token, env.SERVICE_AUTH_TOKEN)) {
-      await reply.code(401).send({ error: 'unauthorized' });
+      await reply.code(401).send(errorBody('unauthorized', 'missing or invalid bearer token'));
     }
   });
 }

@@ -1,10 +1,16 @@
 import type { FastifyInstance } from 'fastify';
+import { BatchStatus } from '@prisma/client';
+import { z } from 'zod';
 import { prisma } from '../../infra/db/prisma.js';
 import { ingestService, pipelineService, publishService, reviewService } from '../../application/container.js';
 import { SessionNotFoundError } from '../../application/ingest.service.js';
 import { BatchNotFoundError } from '../../application/publish.service.js';
 import { MappingConfigSchema } from '../../domain/ingest/mapping.js';
+import { errorBody } from '../errors.js';
+import { PageQuerySchema, pageArgs, toPage } from '../pagination.js';
 import { kindFromFilename } from '../schemas/requests.js';
+
+const BatchListQuerySchema = PageQuerySchema.extend({ status: z.nativeEnum(BatchStatus).optional() });
 
 export async function batchRoutes(app: FastifyInstance): Promise<void> {
   // Upload a CSV/XLSX -> SourceConnection + ImportBatch + RawArtifact + ExtractedRecords.
@@ -13,7 +19,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
     '/sessions/:sessionId/batches',
     async (req, reply) => {
       if (!req.isMultipart()) {
-        return reply.code(415).send({ error: 'expected_multipart_form_data' });
+        return reply.code(415).send(errorBody('expected_multipart', 'expected multipart/form-data'));
       }
 
       let fileBuffer: Buffer | undefined;
@@ -32,12 +38,12 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
       }
 
       if (!fileBuffer || !filename) {
-        return reply.code(400).send({ error: 'missing_file' });
+        return reply.code(400).send(errorBody('missing_file', 'a file part is required'));
       }
 
       const kind = kindFromFilename(filename);
       if (!kind) {
-        return reply.code(400).send({ error: 'unsupported_file_type', filename });
+        return reply.code(400).send(errorBody('unsupported_file_type', `unsupported file: ${filename}`));
       }
 
       let mapping;
@@ -45,11 +51,11 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
         const raw: unknown = mappingRaw ? JSON.parse(mappingRaw) : {};
         const parsed = MappingConfigSchema.safeParse(raw);
         if (!parsed.success) {
-          return reply.code(400).send({ error: 'invalid_mapping', issues: parsed.error.issues });
+          return reply.code(400).send(errorBody('invalid_mapping', 'invalid mapping', parsed.error.issues));
         }
         mapping = parsed.data;
       } catch {
-        return reply.code(400).send({ error: 'invalid_mapping_json' });
+        return reply.code(400).send(errorBody('invalid_mapping_json', 'mapping is not valid JSON'));
       }
 
       try {
@@ -64,7 +70,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(201).send(result);
       } catch (err) {
         if (err instanceof SessionNotFoundError) {
-          return reply.code(404).send({ error: 'session_not_found' });
+          return reply.code(404).send(errorBody('session_not_found', 'session not found'));
         }
         throw err;
       }
@@ -73,11 +79,14 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { sessionId: string } }>(
     '/sessions/:sessionId/batches',
-    async (req) => {
-      return prisma.importBatch.findMany({
-        where: { sessionId: req.params.sessionId },
-        orderBy: { createdAt: 'desc' },
+    async (req, reply) => {
+      const q = BatchListQuerySchema.safeParse(req.query);
+      if (!q.success) return reply.code(400).send(errorBody('invalid_query', 'invalid query', q.error.issues));
+      const rows = await prisma.importBatch.findMany({
+        where: { sessionId: req.params.sessionId, status: q.data.status },
+        ...pageArgs(q.data),
       });
+      return toPage(rows, q.data);
     },
   );
 
@@ -90,7 +99,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
         _count: { select: { extractedRecords: true } },
       },
     });
-    if (!batch) return reply.code(404).send({ error: 'not_found' });
+    if (!batch) return reply.code(404).send(errorBody('not_found', 'batch not found'));
     return batch;
   });
 
@@ -98,7 +107,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
   // error, readiness, the review audit trail, and the publish log.
   app.get<{ Params: { id: string } }>('/batches/:id/timeline', async (req, reply) => {
     const batch = await prisma.importBatch.findUnique({ where: { id: req.params.id } });
-    if (!batch) return reply.code(404).send({ error: 'not_found' });
+    if (!batch) return reply.code(404).send(errorBody('not_found', 'batch not found'));
     const [readiness, reviewEvents, publishActions] = await Promise.all([
       reviewService.readiness(batch.id),
       prisma.reviewEvent.findMany({ where: { batchId: batch.id }, orderBy: { createdAt: 'asc' } }),
@@ -125,7 +134,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
     try {
       return await pipelineService.retry(req.params.id);
     } catch (err) {
-      if (err instanceof BatchNotFoundError) return reply.code(404).send({ error: 'not_found' });
+      if (err instanceof BatchNotFoundError) return reply.code(404).send(errorBody('not_found', 'batch not found'));
       throw err;
     }
   });
