@@ -26,6 +26,13 @@ const EnvSchema = z.object({
   // `Authorization: Bearer <token>`. Required (min length enforced) so we never
   // boot an unauthenticated service by accident.
   SERVICE_AUTH_TOKEN: z.string().min(16, 'must be at least 16 characters'),
+
+  // Which PublisherPort implementation to use. `stub` (default) records actions
+  // in-memory; `http` calls the real operator platform import API.
+  PUBLISHER: z.enum(['stub', 'http']).default('stub'),
+  OPERATOR_IMPORT_BASE_URL: z.string().url().optional(),
+  OPERATOR_IMPORT_TOKEN: z.string().optional(),
+  OPERATOR_IMPORT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
