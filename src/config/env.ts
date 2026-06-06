@@ -33,6 +33,11 @@ const EnvSchema = z.object({
   OPERATOR_IMPORT_BASE_URL: z.string().url().optional(),
   OPERATOR_IMPORT_TOKEN: z.string().optional(),
   OPERATOR_IMPORT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+
+  // AI column-mapping suggester. When ANTHROPIC_API_KEY is set the LLM mapper is
+  // used; otherwise the deterministic alias-based fallback.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  AI_MAPPING_MODEL: z.string().default('claude-opus-4-8'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

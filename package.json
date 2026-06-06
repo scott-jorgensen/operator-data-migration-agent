@@ -23,6 +23,7 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.102.0",
     "@fastify/multipart": "^8.3.0",
     "@prisma/client": "^5.22.0",
     "csv-parse": "^5.5.6",
