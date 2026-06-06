@@ -1,0 +1,24 @@
+# Local Postgres for the Operator Data Migration Agent.
+# This DB belongs to the migration service ONLY — it never hosts operator
+# platform tables. pg-boss creates its own schema (PGBOSS_SCHEMA) inside it.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: odma-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: operator_migration
+    ports:
+      - '5432:5432'
+    volumes:
+      - odma-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d operator_migration']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  odma-pgdata:
