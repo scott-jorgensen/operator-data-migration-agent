@@ -270,6 +270,7 @@ model ReviewItem {
   entityType        EntityType
   reason            ReviewReason
   status            ReviewStatus      @default(OPEN)
+  details           Json? // plain-language explanation + structured context (set when created)
   resolution        ReviewResolution?
   resolvedBy        String?
   resolutionData    Json? // chosen match id, field edits, etc.
@@ -279,9 +280,28 @@ model ReviewItem {
 
   batch           ImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
   canonicalRecord CanonicalRecord @relation(fields: [canonicalRecordId], references: [id], onDelete: Cascade)
+  events          ReviewEvent[]
 
   @@index([batchId, status])
   @@index([canonicalRecordId])
+}
+
+// Immutable audit trail of review decisions.
+model ReviewEvent {
+  id           String       @id @default(cuid())
+  reviewItemId String
+  batchId      String
+  action       String // resolution applied (ACCEPT/REJECT/REMAP/MERGE/EDIT) or SKIP
+  fromStatus   ReviewStatus
+  toStatus     ReviewStatus
+  actor        String?
+  data         Json?
+  createdAt    DateTime     @default(now())
+
+  reviewItem ReviewItem @relation(fields: [reviewItemId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([reviewItemId])
 }
 
 // Audit log of everything done (or planned) against the operator platform.

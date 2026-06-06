@@ -2,6 +2,8 @@ import 'dotenv/config'; // load .env before any config is evaluated
 import { env } from './config/env.js';
 import { buildServer } from './server.js';
 import { disconnectPrisma } from './infra/db/prisma.js';
+import { startBoss, stopBoss } from './infra/queue/boss.js';
+import { registerWorkers } from './workers/index.js';
 
 /**
  * Entrypoint. The same process can run the API, the worker, or both, selected
@@ -17,18 +19,20 @@ async function main(): Promise<void> {
 
   const shutdownHooks: Array<() => Promise<void>> = [];
 
+  // pg-boss is needed by both roles: the API enqueues jobs, the worker runs them.
+  await startBoss();
+  shutdownHooks.push(stopBoss);
+
+  if (runWorker) {
+    await registerWorkers();
+  }
+
   if (runApi) {
     const app = await buildServer();
     await app.listen({ port: env.PORT, host: env.HOST });
     shutdownHooks.push(async () => {
       await app.close();
     });
-  }
-
-  if (runWorker) {
-    // Wired in slice 4 (pg-boss bootstrap + worker registration).
-    // const boss = await startWorkers();
-    // shutdownHooks.push(() => boss.stop());
   }
 
   const shutdown = async (signal: string): Promise<void> => {
