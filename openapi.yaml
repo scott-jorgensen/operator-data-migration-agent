@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  title: Operator Import API
+  version: 1.0.0
+  description: >-
+    Server-side contract for the operator platform's import API, consumed by the
+    Operator Data Migration Agent via its PublisherPort. The executable form of
+    this contract lives in src/domain/publish/contract.ts (Zod). See
+    docs/operator-import-api.md for prose.
+servers:
+  - url: /v1/import
+security:
+  - bearerAuth: []
+paths:
+  /actions:
+    post:
+      summary: Apply a publish action (CREATE/UPDATE/LINK/DEACTIVATE)
+      operationId: applyAction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplyActionRequest' }
+      responses:
+        '200':
+          description: Action committed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplyActionResponse' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+  /actions/compensate:
+    post:
+      summary: Reverse a previously committed action (best-effort)
+      operationId: compensateAction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompensateRequest' }
+      responses:
+        '200':
+          description: Action rolled back
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompensateResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+  /entities:
+    get:
+      summary: Find existing platform entities for matching
+      operationId: findEntities
+      parameters:
+        - { name: type, in: query, required: true, schema: { $ref: '#/components/schemas/EntityType' } }
+        - { name: email, in: query, required: false, schema: { type: string } }
+        - { name: code, in: query, required: false, schema: { type: string } }
+        - { name: name, in: query, required: false, schema: { type: string } }
+      responses:
+        '200':
+          description: Matching entities (possibly empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FindResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+  /health:
+    get:
+      summary: Connectivity / health check
+      operationId: importHealth
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    EntityType:
+      type: string
+      enum: [PRODUCT, BOOKING, TRAVELER, GUIDE, QUALIFICATION, STAFFING_RULE]
+    PublishOp:
+      type: string
+      enum: [CREATE, UPDATE, LINK, DEACTIVATE]
+    ApplyActionRequest:
+      type: object
+      required: [op, entityType, idempotencyKey]
+      properties:
+        op: { $ref: '#/components/schemas/PublishOp' }
+        entityType: { $ref: '#/components/schemas/EntityType' }
+        externalId: { type: [string, 'null'] }
+        data: { type: object, additionalProperties: true }
+        idempotencyKey: { type: string }
+    ApplyActionResponse:
+      type: object
+      required: [externalId, op, entityType, status]
+      properties:
+        externalId: { type: string }
+        op: { $ref: '#/components/schemas/PublishOp' }
+        entityType: { $ref: '#/components/schemas/EntityType' }
+        status: { type: string, enum: [COMMITTED] }
+        idempotent: { type: boolean }
+        response: { type: object, additionalProperties: true }
+    CompensateRequest:
+      type: object
+      required: [originalOp, entityType, externalId, idempotencyKey]
+      properties:
+        originalOp: { $ref: '#/components/schemas/PublishOp' }
+        entityType: { $ref: '#/components/schemas/EntityType' }
+        externalId: { type: string }
+        idempotencyKey: { type: string }
+    CompensateResponse:
+      type: object
+      required: [externalId, status]
+      properties:
+        externalId: { type: string }
+        status: { type: string, enum: [ROLLED_BACK] }
+        response: { type: object, additionalProperties: true }
+    FoundEntity:
+      type: object
+      required: [externalId, data]
+      properties:
+        externalId: { type: string }
+        data: { type: object, additionalProperties: true }
+    FindResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/FoundEntity' }
+    HealthResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        service: { type: string }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid_request, unauthorized, not_found, conflict, validation_error, internal]
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
